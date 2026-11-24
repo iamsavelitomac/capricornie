@@ -59,12 +59,17 @@ const SAMPLE_JITTER = 0.9;
 const COARSE_SAMPLING = { step: 2, alphaThreshold: 140 };
 const FINE_SAMPLING = { step: 1, alphaThreshold: 75 };
 
-const ART_LAYERS = [
+const BOUQUET_LAYERS = [
     { name: "foliage", particleShare: 0.12, sampling: COARSE_SAMPLING },
     { name: "petals", particleShare: 0.54, sampling: COARSE_SAMPLING },
     { name: "outlines", particleShare: 0.25, sampling: FINE_SAMPLING },
     { name: "centers", particleShare: 0.05, sampling: FINE_SAMPLING },
     { name: "ribbon", particleShare: 0.04, sampling: COARSE_SAMPLING },
+];
+
+const SHAPE_LAYERS = [
+    { name: "shapeFill", particleShare: 0.8, sampling: COARSE_SAMPLING },
+    { name: "shapeOutline", particleShare: 0.2, sampling: FINE_SAMPLING },
 ];
 
 const FLOWER_ANCHORS = [
@@ -179,6 +184,34 @@ const BOUQUET_PRESETS = {
     },
 };
 
+const SHAPE_FORMING_MS = 2000 / BOUQUET_TRANSITION_SPEED;
+
+const LOVE_MESSAGE_LINES = ["I", "Love", "You"];
+const LOVE_MESSAGE_LINE_HOLD_MS = 1500;
+const LOVE_MESSAGE_HEART_HOLD_MS = 2000;
+
+const LOVE_FONT_FAMILY = "Georgia, \"Times New Roman\", serif";
+const LOVE_TEXT_MAX_WIDTH = 520;
+const LOVE_TEXT_MAX_FONT_SIZE = 300;
+const LOVE_TEXT_OUTLINE_WIDTH = 4;
+
+const LOVE_LIGHT_COLOR = "#f7a8bb";
+const LOVE_DEEP_COLOR = "#d6416a";
+const LOVE_OUTLINE_COLOR = "#9c2f54";
+const LOVE_SHINE_COLOR = "#fde6ec";
+const LOVE_GRADIENT_REACH = 220;
+
+const HEART_SCALE = 13;
+const HEART_CURVE_MIDDLE_Y = -2.5;
+const HEART_OUTLINE_STEPS = 240;
+const HEART_OUTLINE_WIDTH = 5;
+const HEART_SHINE = { x: ART_CENTER - 117, y: ART_CENTER - 136, radiusX: 34, radiusY: 18, rotation: -0.7 };
+
+const SHOWS = [
+    ...Object.values(BOUQUET_PRESETS).map(createBouquetShow),
+    createLoveMessageShow(),
+];
+
 window.addEventListener("DOMContentLoaded", () => {
     startApp(document.querySelector("canvas"));
 });
@@ -203,7 +236,8 @@ function createScene(canvas) {
         viewport: null,
         clock: { time: 0, lastTimestamp: null },
         isShowingBouquet: false,
-        lastPreset: null,
+        lastShow: null,
+        nextFrameTimeoutId: null,
     };
 }
 
@@ -237,15 +271,70 @@ function hasArea(viewport) {
 }
 
 function showNextBouquet(scene) {
-    const preset = pickPresetOtherThan(scene.lastPreset);
-    const points = generateBouquetPoints(scene.artLayers, preset);
+    const show = pickShowOtherThan(scene.lastShow);
+
+    scene.lastShow = show;
+    playFrame(scene, show, 0);
+}
+
+function playFrame(scene, show, frameIndex) {
+    const isShowFinished = frameIndex === show.length;
+
+    if (isShowFinished) {
+        scatterBouquet(scene);
+        return;
+    }
+
+    const frame = show[frameIndex];
+
+    formShape(scene, frame);
+    scheduleNextFrame(scene, show, frameIndex, frame.holdMs);
+}
+
+function formShape(scene, frame) {
+    const points = generateFramePoints(scene.artLayers, frame);
 
     assignBouquetTargets(scene.particles, points);
-    scene.lastPreset = preset;
     scene.isShowingBouquet = true;
 }
 
+function scheduleNextFrame(scene, show, frameIndex, holdMs) {
+    clearTimeout(scene.nextFrameTimeoutId);
+
+    if (Number.isFinite(holdMs)) {
+        const frameDurationMs = SHAPE_FORMING_MS + holdMs;
+
+        scene.nextFrameTimeoutId = setTimeout(() => playFrame(scene, show, frameIndex + 1), frameDurationMs);
+    }
+}
+
+function pickShowOtherThan(excludedShow) {
+    const candidates = SHOWS.filter(show => show !== excludedShow);
+
+    return pickRandom(candidates);
+}
+
+function createBouquetShow(preset) {
+    return [
+        { layers: BOUQUET_LAYERS, paint: artLayers => paintBouquet(artLayers, preset), holdMs: Infinity },
+    ];
+}
+
+function createLoveMessageShow() {
+    const lineFrames = LOVE_MESSAGE_LINES.map(line => ({
+        layers: SHAPE_LAYERS,
+        paint: artLayers => paintMessageLine(artLayers, line),
+        holdMs: LOVE_MESSAGE_LINE_HOLD_MS,
+    }));
+
+    const heartFrame = { layers: SHAPE_LAYERS, paint: paintHeart, holdMs: LOVE_MESSAGE_HEART_HOLD_MS };
+
+    return [...lineFrames, heartFrame];
+}
+
 function scatterBouquet(scene) {
+    clearTimeout(scene.nextFrameTimeoutId);
+
     if (!scene.isShowingBouquet) {
         return;
     }
@@ -482,7 +571,9 @@ function easeColor(particle, easing) {
 }
 
 function createArtLayers() {
-    return Object.fromEntries(ART_LAYERS.map(layer => [layer.name, createArtContext()]));
+    const layers = [...BOUQUET_LAYERS, ...SHAPE_LAYERS];
+
+    return Object.fromEntries(layers.map(layer => [layer.name, createArtContext()]));
 }
 
 function createArtContext() {
@@ -494,22 +585,15 @@ function createArtContext() {
     return canvas.getContext("2d", { willReadFrequently: true });
 }
 
-function pickPresetOtherThan(excludedPreset) {
-    const candidates = Object.values(BOUQUET_PRESETS).filter(preset => preset !== excludedPreset);
+function generateFramePoints(artLayers, frame) {
+    clearArtLayers(artLayers);
+    frame.paint(artLayers);
 
-    return pickRandom(candidates);
-}
-
-function generateBouquetPoints(artLayers, preset) {
-    paintBouquet(artLayers, preset);
-
-    return shuffle(sampleBouquetPoints(artLayers));
+    return shuffle(sampleLayers(artLayers, frame.layers));
 }
 
 function paintBouquet(artLayers, preset) {
     const flowers = layoutFlowers(preset);
-
-    clearArtLayers(artLayers);
 
     drawFoliage(artLayers.foliage, flowers, preset.foliageColor);
     flowers.forEach(flower => drawFlower(artLayers, flower));
@@ -534,16 +618,16 @@ function layoutFlowers(preset) {
     }));
 }
 
-function sampleBouquetPoints(artLayers) {
-    const quotas = splitParticlesBetweenLayers();
+function sampleLayers(artLayers, layers) {
+    const quotas = splitParticlesBetweenLayers(layers);
 
-    return ART_LAYERS.flatMap((layer, depth) =>
+    return layers.flatMap((layer, depth) =>
         sampleLayerPoints(artLayers[layer.name], layer.sampling, quotas[depth], depth),
     );
 }
 
-function splitParticlesBetweenLayers() {
-    const quotas = ART_LAYERS.map(layer => Math.round(PARTICLE_COUNT * layer.particleShare));
+function splitParticlesBetweenLayers(layers) {
+    const quotas = layers.map(layer => Math.round(PARTICLE_COUNT * layer.particleShare));
 
     quotas[quotas.length - 1] += PARTICLE_COUNT - sum(quotas);
 
@@ -1050,6 +1134,88 @@ function strokeRibbonTails(context, color) {
     strokeQuadraticCurve(context, [{ x: 404, y: 610 }, { x: 436, y: 640 }, { x: 445, y: 663 }]);
 }
 
+function paintMessageLine(artLayers, line) {
+    const { shapeFill, shapeOutline } = artLayers;
+    const font = loveFont(fitFontSize(shapeFill, line));
+
+    shapeFill.font = font;
+    shapeOutline.font = font;
+
+    const position = centeredTextPosition(shapeFill, line);
+
+    fillMessageText(shapeFill, line, position);
+    strokeMessageText(shapeOutline, line, position);
+}
+
+function loveFont(size) {
+    return `italic bold ${size}px ${LOVE_FONT_FAMILY}`;
+}
+
+function fitFontSize(context, line) {
+    context.font = loveFont(LOVE_TEXT_MAX_FONT_SIZE);
+
+    const { actualBoundingBoxLeft, actualBoundingBoxRight } = context.measureText(line);
+    const widthAtMaxSize = actualBoundingBoxLeft + actualBoundingBoxRight;
+
+    return Math.min(LOVE_TEXT_MAX_FONT_SIZE, LOVE_TEXT_MAX_FONT_SIZE * LOVE_TEXT_MAX_WIDTH / widthAtMaxSize);
+}
+
+function centeredTextPosition(context, line) {
+    const metrics = context.measureText(line);
+
+    return {
+        x: ART_CENTER + (metrics.actualBoundingBoxLeft - metrics.actualBoundingBoxRight) / 2,
+        y: ART_CENTER + (metrics.actualBoundingBoxAscent - metrics.actualBoundingBoxDescent) / 2,
+    };
+}
+
+function fillMessageText(context, line, position) {
+    context.fillStyle = createLoveGradient(context);
+    context.fillText(line, position.x, position.y);
+}
+
+function strokeMessageText(context, line, position) {
+    context.strokeStyle = LOVE_OUTLINE_COLOR;
+    context.lineWidth = LOVE_TEXT_OUTLINE_WIDTH;
+    context.lineJoin = "round";
+    context.strokeText(line, position.x, position.y);
+}
+
+function paintHeart(artLayers) {
+    const outline = heartOutline();
+
+    fillPolygon(artLayers.shapeFill, outline, createLoveGradient(artLayers.shapeFill));
+    fillEllipse(artLayers.shapeFill, HEART_SHINE, LOVE_SHINE_COLOR);
+
+    artLayers.shapeOutline.lineJoin = "round";
+    strokePolygon(artLayers.shapeOutline, outline, LOVE_OUTLINE_COLOR, HEART_OUTLINE_WIDTH);
+}
+
+function heartOutline() {
+    return Array.from({ length: HEART_OUTLINE_STEPS }, (_, step) => heartPoint(step / HEART_OUTLINE_STEPS * TAU));
+}
+
+function heartPoint(angle) {
+    const curveX = 16 * Math.sin(angle) ** 3;
+    const curveY = 13 * Math.cos(angle) - 5 * Math.cos(2 * angle) - 2 * Math.cos(3 * angle) - Math.cos(4 * angle);
+
+    return {
+        x: ART_CENTER + curveX * HEART_SCALE,
+        y: ART_CENTER - (curveY - HEART_CURVE_MIDDLE_Y) * HEART_SCALE,
+    };
+}
+
+function createLoveGradient(context) {
+    const start = ART_CENTER - LOVE_GRADIENT_REACH;
+    const end = ART_CENTER + LOVE_GRADIENT_REACH;
+    const gradient = context.createLinearGradient(start, start, end, end);
+
+    gradient.addColorStop(0, LOVE_LIGHT_COLOR);
+    gradient.addColorStop(1, LOVE_DEEP_COLOR);
+
+    return gradient;
+}
+
 function saveAndTransform(context, { x, y, angle }) {
     context.save();
     context.translate(x, y);
@@ -1074,6 +1240,29 @@ function fillEllipse(context, { x, y, radiusX, radiusY, rotation = 0 }, color) {
     context.beginPath();
     context.ellipse(x, y, radiusX, radiusY, rotation, 0, TAU);
     context.fill();
+}
+
+function fillPolygon(context, points, color) {
+    context.fillStyle = color;
+    tracePolygon(context, points);
+    context.fill();
+}
+
+function strokePolygon(context, points, color, lineWidth) {
+    context.strokeStyle = color;
+    context.lineWidth = lineWidth;
+    tracePolygon(context, points);
+    context.stroke();
+}
+
+function tracePolygon(context, points) {
+    context.beginPath();
+
+    for (const point of points) {
+        context.lineTo(point.x, point.y);
+    }
+
+    context.closePath();
 }
 
 function strokeQuadraticCurve(context, [start, control, end]) {
